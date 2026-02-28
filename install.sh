@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — 安装 context-guard hook 到 ~/.claude/
+# install.sh — Install context-guard hook to ~/.claude/
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -12,22 +12,21 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RESET='\033[0m'
 
-# ─── 1. 复制 hook 脚本 ───
+# ─── 1. Copy hook script ───
 mkdir -p "$HOOK_DIR"
 
 if [[ -f "$HOOK_DST" ]] && diff -q "$HOOK_SRC" "$HOOK_DST" &>/dev/null; then
-    echo -e "${GREEN}✓${RESET} Hook 脚本已是最新: $HOOK_DST"
+    echo -e "${GREEN}✓${RESET} Hook script is up to date: $HOOK_DST"
 else
     cp "$HOOK_SRC" "$HOOK_DST"
     chmod +x "$HOOK_DST"
-    echo -e "${GREEN}✓${RESET} Hook 脚本已安装: $HOOK_DST"
+    echo -e "${GREEN}✓${RESET} Hook script installed: $HOOK_DST"
 fi
 
-# ─── 2. 注册 hook 到 settings.json ───
+# ─── 2. Register hooks in settings.json ───
 HOOK_CMD="~/.claude/hooks/context-guard.sh"
 
 if [[ ! -f "$SETTINGS" ]]; then
-    # 创建最小 settings
     cat > "$SETTINGS" << EOF
 {
   "hooks": {
@@ -36,9 +35,8 @@ if [[ ! -f "$SETTINGS" ]]; then
   }
 }
 EOF
-    echo -e "${GREEN}✓${RESET} 创建 settings.json 并注册 hooks"
+    echo -e "${GREEN}✓${RESET} Created settings.json and registered hooks"
 else
-    # 检查是否已注册
     NEEDS_UPDATE=false
 
     for EVENT in PreToolUse PostToolUse; do
@@ -53,7 +51,6 @@ else
     done
 
     if $NEEDS_UPDATE; then
-        # 用 jq 添加/更新 hooks
         HOOK_ENTRY=$(jq -n --arg cmd "$HOOK_CMD" '[{"hooks": [{"type": "command", "command": $cmd, "timeout": 10}]}]')
 
         TMP=$(mktemp)
@@ -72,15 +69,17 @@ else
                 end
             )
         ' "$SETTINGS" > "$TMP" && mv "$TMP" "$SETTINGS"
-        echo -e "${GREEN}✓${RESET} Hooks 已注册到 settings.json"
+        echo -e "${GREEN}✓${RESET} Hooks registered in settings.json"
     else
-        echo -e "${GREEN}✓${RESET} Hooks 已注册，无需更新"
+        echo -e "${GREEN}✓${RESET} Hooks already registered, no update needed"
     fi
 fi
 
-echo -e "\n${GREEN}安装完成！${RESET}"
-echo -e "  Hook 脚本: $HOOK_DST"
-echo -e "  配置文件: $SETTINGS"
-echo -e "\n${YELLOW}配置:${RESET}"
-echo -e "  CTX_WARN_TOKENS=150000     # 警告阈值（可通过环境变量覆盖）"
-echo -e "  CTX_CRITICAL_TOKENS=170000 # 拒绝阈值（可通过环境变量覆盖）"
+echo -e "\n${GREEN}Installation complete!${RESET}"
+echo -e "  Hook script: $HOOK_DST"
+echo -e "  Settings: $SETTINGS"
+echo -e "\n${YELLOW}Configuration:${RESET}"
+echo -e "  CTX_WARN_TOKENS=175000     # Warning threshold (override via env var)"
+echo -e "  CTX_CRITICAL_TOKENS=190000 # Rejection threshold (override via env var)"
+echo -e "\n${YELLOW}TTY mode env vars:${RESET}"
+echo -e "  ICC_HANDOFF_PATH           # Set automatically by supervisor-tty; agent writes handoff to this path"
