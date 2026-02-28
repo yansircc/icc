@@ -179,3 +179,7 @@ CTX_WARN_TOKENS=5000 CTX_CRITICAL_TOKENS=8000 \
 - Hook thresholds can be adjusted based on actual task complexity
 - Handoff files are saved at `/tmp/icc-handoff-*.md` and can be reviewed afterward for relay history
 - The agent is designed to run fully autonomously and will not ask for human confirmation
+- **`CLAUDE_BIN`**: icc finds the `claude` binary via `exec.LookPath`, which ignores shell aliases and functions. If you use a wrapper (e.g. [ccc](https://github.com/anthropics/claude-code)) that injects API keys or provider config, set `CLAUDE_BIN` to point to it, otherwise claude may fail with 401:
+  ```bash
+  export CLAUDE_BIN=/path/to/your/wrapper
+  ```
