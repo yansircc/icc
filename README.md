@@ -1,4 +1,6 @@
-# ICC
+# Infinite Claude Code
+
+[![CI](https://github.com/anthropics/infinite-cc/actions/workflows/ci.yml/badge.svg)](https://github.com/anthropics/infinite-cc/actions/workflows/ci.yml)
 
 Let Claude Code break through its context window limit by automatically relaying across sessions to complete complex tasks.
 
@@ -39,12 +41,38 @@ Session 3 --> task complete (no handoff -> icc exits)
 
 ## Installation
 
+### From Release (Recommended)
+
+Download the latest binary from [Releases](https://github.com/anthropics/infinite-cc/releases):
+
 ```bash
-bash install.sh
+# macOS (Apple Silicon)
+curl -Lo icc https://github.com/anthropics/infinite-cc/releases/latest/download/icc-darwin-arm64
+chmod +x icc && sudo mv icc /usr/local/bin/
+
+# macOS (Intel)
+curl -Lo icc https://github.com/anthropics/infinite-cc/releases/latest/download/icc-darwin-amd64
+chmod +x icc && sudo mv icc /usr/local/bin/
+
+# Linux (amd64)
+curl -Lo icc https://github.com/anthropics/infinite-cc/releases/latest/download/icc-linux-amd64
+chmod +x icc && sudo mv icc /usr/local/bin/
+```
+
+### From Source
+
+```bash
+go build -o icc .
+```
+
+### Setup Hooks
+
+```bash
+icc install
 ```
 
 This will:
-- Copy `context-guard.sh` to `~/.claude/hooks/`
+- Copy the embedded `context-guard.sh` to `~/.claude/hooks/`
 - Register PreToolUse/PostToolUse hooks in `~/.claude/settings.json`
 
 ## Usage
@@ -67,6 +95,7 @@ tmux attach -t icc-a1b2c3   # session name shown at startup
 | Option | Default | Description | Mode |
 |--------|---------|-------------|------|
 | `-p` | _(off)_ | Pipe mode (`claude -p`, no tmux) | - |
+| `--version`, `-v` | | Print version and exit | - |
 | `--model MODEL` | sonnet | Claude model | Both |
 | `--max-sessions N` | 10 | Maximum number of relay sessions | Both |
 | `--warn-tokens N` | 175000 | Warning threshold | Both |
@@ -98,13 +127,15 @@ CTX_WARN_TOKENS=5000 CTX_CRITICAL_TOKENS=8000 \
 
 | File | Purpose |
 |------|---------|
-| `icc` | Main entry point: `-p` for pipe mode, default TTY mode |
-| `context-guard.sh` | Hook: PostToolUse reminders / PreToolUse rejection (whitelists handoff path) |
-| `install.sh` | Install hooks to `~/.claude/` |
+| `main.go` | Entry point: CLI parsing, env overrides, `install` subcommand, dispatch |
+| `install.go` | `icc install`: embed + deploy hook script, register in settings.json |
+| `log.go` | ANSI colors, timestamped logging, session header/finish banner |
+| `prompt.go` | Handoff protocol: system prompt + continuation prompt templates |
+| `pipe.go` | Pipe mode: `claude -p` stream-json session loop, cost tracking |
+| `tty.go` | TTY mode: tmux session management, prompt sending |
+| `detect.go` | Signal detection: polling, shell prompt detection, graceful exit |
+| `context-guard.sh` | Hook source (embedded into binary via `go:embed`) |
 | `e2e.sh` | End-to-end tests: `bash e2e.sh [pipe\|tty\|all]` |
-| `lib/core.sh` | Shared infrastructure: config defaults, colors, logging, arg parsing, banners |
-| `lib/handoff.sh` | Handoff protocol: system prompt + continuation prompt templates |
-| `lib/detect.sh` | Signal detection: polling skeleton + handoff file + shell prompt detection |
 
 ## Signal Flow Details
 
@@ -127,10 +158,8 @@ CTX_WARN_TOKENS=5000 CTX_CRITICAL_TOKENS=8000 \
 ## Dependencies
 
 - `claude` CLI (installed and logged in)
-- `jq`
-- `python3`
 - `tmux` (required for TTY mode)
-- `openssl` (for generating random file names)
+- `jq` (required by `context-guard.sh` hook)
 
 ## Comparison of the Two Modes
 

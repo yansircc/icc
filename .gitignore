@@ -1,0 +1,6 @@
+# Go binary
+/icc
+/icc-*
+
+# Claude Code working files
+.claude/
