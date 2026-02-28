@@ -1,6 +1,6 @@
 # Infinite Claude Code
 
-[![CI](https://github.com/anthropics/infinite-cc/actions/workflows/ci.yml/badge.svg)](https://github.com/anthropics/infinite-cc/actions/workflows/ci.yml)
+[![CI](https://github.com/yansircc/icc/actions/workflows/ci.yml/badge.svg)](https://github.com/yansircc/icc/actions/workflows/ci.yml)
 
 Let Claude Code break through its context window limit by automatically relaying across sessions to complete complex tasks.
 
@@ -43,19 +43,19 @@ Session 3 --> task complete (no handoff -> icc exits)
 
 ### From Release (Recommended)
 
-Download the latest binary from [Releases](https://github.com/anthropics/infinite-cc/releases):
+Download the latest binary from [Releases](https://github.com/yansircc/icc/releases):
 
 ```bash
 # macOS (Apple Silicon)
-curl -Lo icc https://github.com/anthropics/infinite-cc/releases/latest/download/icc-darwin-arm64
+curl -Lo icc https://github.com/yansircc/icc/releases/latest/download/icc-darwin-arm64
 chmod +x icc && sudo mv icc /usr/local/bin/
 
 # macOS (Intel)
-curl -Lo icc https://github.com/anthropics/infinite-cc/releases/latest/download/icc-darwin-amd64
+curl -Lo icc https://github.com/yansircc/icc/releases/latest/download/icc-darwin-amd64
 chmod +x icc && sudo mv icc /usr/local/bin/
 
 # Linux (amd64)
-curl -Lo icc https://github.com/anthropics/infinite-cc/releases/latest/download/icc-linux-amd64
+curl -Lo icc https://github.com/yansircc/icc/releases/latest/download/icc-linux-amd64
 chmod +x icc && sudo mv icc /usr/local/bin/
 ```
 
