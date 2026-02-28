@@ -1,0 +1,286 @@
+#!/bin/bash
+# icc — ICC (Infinite Claude Code) supervisor
+# Default: TTY mode (tmux). Use -p for pipe mode.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/lib/core.sh"
+source "$SCRIPT_DIR/lib/handoff.sh"
+
+# ─── Mode & TTY-specific defaults ───
+PIPE_MODE=false
+PERMISSION_MODE="${PERMISSION_MODE:-bypassPermissions}"
+SESSION_TIMEOUT="${SESSION_TIMEOUT:-600}"
+SESSION_NAME=""
+
+# ─── Argument parsing ───
+TASK=""
+while [[ $# -gt 0 ]]; do
+    if handle_common_arg "$1" "${2:-}"; then shift 2; continue; fi
+    case "$1" in
+        -p)                 PIPE_MODE=true; shift ;;
+        --permission-mode)  PERMISSION_MODE="$2"; shift 2 ;;
+        --session-timeout)  SESSION_TIMEOUT="$2"; shift 2 ;;
+        --name)             SESSION_NAME="$2"; shift 2 ;;
+        --help|-h)
+            cat <<'USAGE'
+Usage: icc [OPTIONS] "TASK DESCRIPTION"
+
+Options:
+  -p                       Pipe mode (claude -p, no tmux). Default is TTY mode.
+  --model MODEL            Claude model (default: sonnet)
+  --max-sessions N         Max relay sessions (default: 10)
+  --warn-tokens N          Context warning threshold (default: 175000)
+  --critical-tokens N      Context deny threshold (default: 190000)
+  --permission-mode MODE   Permission mode (default: bypassPermissions) [TTY only]
+  --session-timeout N      Per-session timeout in seconds (default: 600) [TTY only]
+  --name NAME              tmux session name (default: icc-<random>) [TTY only]
+
+Environment variables CTX_WARN_TOKENS, CTX_CRITICAL_TOKENS also work.
+
+Examples:
+  # TTY mode (default) — you can attach to observe
+  icc --model haiku --max-sessions 5 "Build a REST API with tests"
+  tmux attach -t icc-a1b2c3
+
+  # Pipe mode — simple, no manual intervention
+  icc -p --model haiku --max-sessions 3 "Write a Python HTTP server"
+
+  # Multiple concurrent instances (each gets unique tmux session)
+  icc --name proj-a "Task A" &
+  icc --name proj-b "Task B" &
+USAGE
+            exit 0
+            ;;
+        -*)
+            echo "Unknown option: $1" >&2; exit 1 ;;
+        *)
+            TASK="$1"; shift ;;
+    esac
+done
+
+if [[ -z "$TASK" ]]; then
+    echo "Error: no task provided. Run 'icc --help' for usage." >&2
+    exit 1
+fi
+
+# ─── Prevent nesting detection ───
+unset CLAUDECODE 2>/dev/null || true
+
+# ═══════════════════════════════════════════
+#  Pipe mode (-p)
+# ═══════════════════════════════════════════
+run_pipe() {
+    TOTAL_COST=0
+    TOTAL_INPUT=0
+    TOTAL_OUTPUT=0
+    SESSION_COUNT=0
+
+    add_cost() {
+        TOTAL_COST=$(python3 -c "print(round($TOTAL_COST + ${1:-0}, 6))")
+    }
+    add_tokens() {
+        TOTAL_INPUT=$(( TOTAL_INPUT + ${1:-0} ))
+        TOTAL_OUTPUT=$(( TOTAL_OUTPUT + ${2:-0} ))
+    }
+
+    CONTEXT=""
+
+    for (( i=1; i<=MAX_SESSIONS; i++ )); do
+        SESSION_COUNT=$i
+        print_session_header "$i"
+        echo -e "  model: $MODEL"
+
+        if [[ $i -eq 1 ]]; then
+            PROMPT="${TASK}
+
+${HANDOFF_SYSTEM_PROMPT}"
+        else
+            PROMPT="$(build_continuation_prompt "$i" "$TASK" "$CONTEXT")
+
+${HANDOFF_SYSTEM_PROMPT}"
+        fi
+
+        RESULT=""
+        TOOL_USE_COUNT=0
+        SESSION_COST=0
+        SESSION_INPUT=0
+        SESSION_OUTPUT=0
+
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            TYPE=$(echo "$line" | jq -r '.type // empty' 2>/dev/null) || continue
+
+            case "$TYPE" in
+                assistant)
+                    TEXT=$(echo "$line" | jq -r '
+                        .message.content[]? |
+                        select(.type == "text") |
+                        .text // empty
+                    ' 2>/dev/null)
+                    [[ -n "$TEXT" ]] && echo -e "${CYAN}${TEXT}${RESET}"
+                    ;;
+                tool_use)
+                    TOOL_USE_COUNT=$(( TOOL_USE_COUNT + 1 ))
+                    TNAME=$(echo "$line" | jq -r '.tool_name // "unknown"' 2>/dev/null)
+                    echo -e "  ${YELLOW}🔧 [$TNAME]${RESET}"
+                    ;;
+                result)
+                    RESULT=$(echo "$line" | jq -r '.result // empty' 2>/dev/null)
+                    SESSION_COST=$(echo "$line" | jq -r '.cost_usd // 0' 2>/dev/null)
+                    SESSION_INPUT=$(echo "$line" | jq -r '.usage.input_tokens // 0' 2>/dev/null)
+                    SESSION_OUTPUT=$(echo "$line" | jq -r '.usage.output_tokens // 0' 2>/dev/null)
+                    ;;
+            esac
+        done < <(claude -p --model "$MODEL" --verbose --output-format stream-json "$PROMPT" 2>/dev/null)
+
+        add_cost "$SESSION_COST"
+        add_tokens "$SESSION_INPUT" "$SESSION_OUTPUT"
+
+        ok "Session $i done — tools: ${TOOL_USE_COUNT}  cost: \$${SESSION_COST}  tokens: ${SESSION_INPUT}/${SESSION_OUTPUT}"
+
+        CONTEXT="$RESULT"
+
+        RESULT_LEN=${#RESULT}
+        if (( TOOL_USE_COUNT == 0 )) && (( RESULT_LEN < 200 )); then
+            echo -e "\n${GREEN}${BOLD}✓ Task appears complete (session used no tools and output was brief)${RESET}"
+            break
+        fi
+        if [[ -z "$RESULT" ]]; then
+            err "Session returned empty result, stopping"
+            break
+        fi
+    done
+
+    print_finish_banner "$SESSION_COUNT" \
+        "Total cost: \$${TOTAL_COST}" \
+        "Total tokens: ${TOTAL_INPUT} in / ${TOTAL_OUTPUT} out"
+}
+
+# ═══════════════════════════════════════════
+#  TTY mode (default)
+# ═══════════════════════════════════════════
+run_tty() {
+    source "$SCRIPT_DIR/lib/detect.sh"
+
+    # Generate unique tmux session name
+    local hex
+    hex=$(openssl rand -hex 3)
+    TMUX_SESSION="${SESSION_NAME:-icc-${hex}}"
+    PANE="${TMUX_SESSION}:0.0"
+
+    send_prompt() {
+        local tmpfile
+        tmpfile=$(mktemp)
+        printf '%s' "$1" > "$tmpfile"
+        tmux load-buffer "$tmpfile"
+        tmux paste-buffer -p -t "$PANE"
+        rm -f "$tmpfile"
+        sleep 0.3
+        tmux send-keys -t "$PANE" Enter
+    }
+
+    tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+
+    echo -e "\n${BOLD}${BLUE}══════════════════════════════════════════${RESET}"
+    echo -e "${BOLD}${BLUE}  ICC (tmux file-signal mode)${RESET}"
+    echo -e "  Model: ${MODEL}"
+    echo -e "  Max sessions: ${MAX_SESSIONS}"
+    echo -e "  Session timeout: ${SESSION_TIMEOUT}s"
+    echo -e "  Attach: ${BOLD}tmux attach -t ${TMUX_SESSION}${RESET}"
+    echo -e "${BOLD}${BLUE}══════════════════════════════════════════${RESET}"
+
+    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50
+    sleep 1
+
+    PREV_HANDOFF_PATH=""
+
+    for (( i=1; i<=MAX_SESSIONS; i++ )); do
+        print_session_header "$i"
+
+        local hex
+        hex=$(openssl rand -hex 3)
+        HANDOFF_PATH="/tmp/icc-handoff-${hex}.md"
+        export ICC_HANDOFF_PATH="$HANDOFF_PATH"
+
+        SYSPROMPT=$(render_system_prompt "$HANDOFF_PATH")
+        SYSPROMPT_FILE=$(mktemp /tmp/icc-sp-XXXXX)
+        printf '%s' "$SYSPROMPT" > "$SYSPROMPT_FILE"
+
+        log "Starting claude session..."
+        tmux send-keys -t "$PANE" "unset CLAUDECODE && ICC_HANDOFF_PATH='${HANDOFF_PATH}' CTX_WARN_TOKENS=${CTX_WARN_TOKENS} CTX_CRITICAL_TOKENS=${CTX_CRITICAL_TOKENS} claude --model ${MODEL} --permission-mode ${PERMISSION_MODE} --append-system-prompt \"\$(cat ${SYSPROMPT_FILE})\"" Enter
+
+        if ! wait_for_claude_ready "$PANE" 60; then
+            err "Claude did not start in time"
+            rm -f "$SYSPROMPT_FILE"
+            break
+        fi
+        ok "Claude ready"
+
+        if [[ $i -eq 1 ]]; then
+            PROMPT="$TASK"
+        else
+            PROMPT=$(build_continuation_prompt "$i" "$TASK" "$PREV_HANDOFF_PATH")
+        fi
+
+        log "Sending prompt..."
+        send_prompt "$PROMPT"
+
+        log "Waiting for signal (handoff file or claude exit)..."
+        wait_for_signal "$HANDOFF_PATH" "$PANE" "$SESSION_TIMEOUT" && SIGNAL=0 || SIGNAL=$?
+
+        rm -f "$SYSPROMPT_FILE"
+
+        case $SIGNAL in
+            0)
+                ok "Session $i: handoff file detected at $HANDOFF_PATH"
+                log "Handoff content preview:"
+                head -5 "$HANDOFF_PATH" | sed 's/^/  /'
+
+                log "Gracefully exiting claude..."
+                graceful_exit "$PANE" 30
+                ok "Claude exited"
+
+                PREV_HANDOFF_PATH="$HANDOFF_PATH"
+
+                if (( i >= MAX_SESSIONS )); then
+                    log "Reached max sessions ($MAX_SESSIONS)"
+                    break
+                fi
+                sleep 2
+                ;;
+            1)
+                if [[ -f "$HANDOFF_PATH" ]]; then
+                    ok "Session $i: claude exited with handoff"
+                    PREV_HANDOFF_PATH="$HANDOFF_PATH"
+                    if (( i >= MAX_SESSIONS )); then
+                        log "Reached max sessions ($MAX_SESSIONS)"
+                        break
+                    fi
+                    sleep 2
+                else
+                    echo -e "\n${GREEN}${BOLD}✓ Session $i: claude exited without handoff — task likely complete${RESET}"
+                    break
+                fi
+                ;;
+            2)
+                err "Session $i timed out (${SESSION_TIMEOUT}s)"
+                log "Force-exiting claude..."
+                graceful_exit "$PANE" 15
+                break
+                ;;
+        esac
+    done
+
+    print_finish_banner "$i" \
+        "Handoff files: ls /tmp/icc-handoff-*.md" \
+        "Attach: tmux attach -t ${TMUX_SESSION}" \
+        "Cleanup: tmux kill-session -t ${TMUX_SESSION}"
+}
+
+# ─── Dispatch ───
+if $PIPE_MODE; then
+    run_pipe
+else
+    run_tty
+fi

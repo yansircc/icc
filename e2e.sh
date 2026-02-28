@@ -38,26 +38,18 @@ test_pipe() {
     local tmpdir="/tmp/icc-test-pipe-$$"
     rm -rf "$tmpdir"
 
-    log "Running supervisor.sh (max-sessions=2, low thresholds)..."
+    log "Running icc -p (max-sessions=2, low thresholds)..."
     output=$(CTX_WARN_TOKENS=5000 CTX_CRITICAL_TOKENS=8000 \
-        bash "$SCRIPT_DIR/supervisor.sh" \
+        bash "$SCRIPT_DIR/icc" -p \
             --model haiku --max-sessions 2 \
             "Create a directory $tmpdir and write a Python hello.py that prints HELLO_ICC" \
         2>&1) || true
 
-    # 1. Script ran and produced output
-    assert "supervisor.sh produced output" '[[ -n "$output" ]]'
-
-    # 2. Session 1 started
+    assert "icc -p produced output" '[[ -n "$output" ]]'
     assert "Session 1 started" 'echo "$output" | grep -q "Session 1"'
-
-    # 3. Finish banner appeared (script completed cleanly)
     assert "Finish banner appeared" 'echo "$output" | grep -q "ICC Finished"'
-
-    # 4. Task was actually executed (file created)
     assert "Task produced artifacts ($tmpdir/hello.py)" '[[ -f "$tmpdir/hello.py" ]]'
 
-    # Cleanup
     rm -rf "$tmpdir"
 
     echo ""
@@ -69,7 +61,6 @@ test_pipe() {
 test_tty() {
     echo -e "\n${BOLD}${BLUE}━━━ TTY Mode E2E ━━━${RESET}\n"
 
-    # Prereqs
     if ! command -v tmux &>/dev/null; then
         skip "tmux not found, skipping TTY test"
         return
@@ -77,13 +68,15 @@ test_tty() {
 
     local tmpdir="/tmp/icc-test-tty-$$"
     local logfile="/tmp/icc-e2e-tty-$$.log"
+    local session_name="icc-e2e-$$"
     rm -rf "$tmpdir" /tmp/icc-handoff-*.md
 
-    tmux kill-session -t icc 2>/dev/null || true
+    tmux kill-session -t "$session_name" 2>/dev/null || true
 
-    log "Running supervisor-tty.sh (max-sessions=3, low thresholds, timeout=180s)..."
+    log "Running icc --name $session_name (max-sessions=3, low thresholds, timeout=180s)..."
     CTX_WARN_TOKENS=5000 CTX_CRITICAL_TOKENS=8000 \
-        bash "$SCRIPT_DIR/supervisor-tty.sh" \
+        bash "$SCRIPT_DIR/icc" \
+            --name "$session_name" \
             --model haiku --max-sessions 3 --session-timeout 180 \
             "Create $tmpdir/calculator.py with add/sub/mul/div functions and $tmpdir/test_calc.py with pytest tests" \
         > "$logfile" 2>&1 || true
@@ -91,21 +84,14 @@ test_tty() {
     local output
     output=$(cat "$logfile")
 
-    # 1. Script ran and produced output
-    assert "supervisor-tty.sh produced output" '[[ -n "$output" ]]'
-
-    # 2. Session 1 started
+    assert "icc (TTY) produced output" '[[ -n "$output" ]]'
     assert "Session 1 started" 'echo "$output" | grep -q "Session 1"'
-
-    # 3. Claude was detected as ready
     assert "Claude ready detected" 'echo "$output" | grep -q "Claude ready"'
 
-    # 4. Handoff file created
     local handoff_files
     handoff_files=$(ls /tmp/icc-handoff-*.md 2>/dev/null || true)
     assert "Handoff file(s) created" '[[ -n "$handoff_files" ]]'
 
-    # 5. Handoff file contains Q0-Q4 structure
     if [[ -n "$handoff_files" ]]; then
         local first_handoff
         first_handoff=$(echo "$handoff_files" | head -1)
@@ -118,15 +104,12 @@ test_tty() {
         head -10 "$first_handoff" | sed 's/^/  /'
     fi
 
-    # 6. Finish banner appeared
     assert "Finish banner appeared" 'echo "$output" | grep -q "ICC Finished"'
-
-    # 7. Session 2 was attempted (relay happened)
     assert "Session 2 started (relay occurred)" 'echo "$output" | grep -q "Session 2"'
 
-    # Cleanup
     rm -f "$logfile"
     rm -rf "$tmpdir"
+    tmux kill-session -t "$session_name" 2>/dev/null || true
 
     echo ""
     log "TTY mode output (last 15 lines):"
