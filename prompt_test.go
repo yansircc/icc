@@ -36,6 +36,12 @@ func TestRenderSystemPrompt(t *testing.T) {
 			t.Error("prompt missing Write tool instruction")
 		}
 	})
+
+	t.Run("clarifies write-only semantics", func(t *testing.T) {
+		if !strings.Contains(got, "WRITE target") {
+			t.Error("prompt should clarify that ICC_HANDOFF_PATH is a write-only target")
+		}
+	})
 }
 
 func TestPipeSystemPrompt(t *testing.T) {
@@ -94,8 +100,8 @@ func TestBuildContinuationPrompt(t *testing.T) {
 		if !strings.Contains(got, "file-based handoff content") {
 			t.Error("prompt should contain file content when handoff path is a valid file")
 		}
-		if strings.Contains(got, handoffFile) {
-			t.Error("prompt should contain file content, not the file path")
+		if !strings.Contains(got, handoffFile) {
+			t.Error("prompt should contain source file path in handoff header annotation")
 		}
 	})
 

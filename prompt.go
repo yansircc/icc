@@ -40,6 +40,7 @@ You are one node in an autonomous state machine. When your context fills up, a s
 
 The environment variable ICC_HANDOFF_PATH is set to:
   %s
+This is the WRITE target — you write your handoff file here. It is NOT the previous session's handoff path.
 
 When you receive a context warning (⚠ Context used...), you MUST:
 1. Finish your current immediate step
@@ -82,8 +83,11 @@ RULES:
 // handoffSource can be a file path (TTY mode) or raw text (pipe mode).
 func buildContinuationPrompt(sessionNum int, task, handoffSource string) string {
 	handoff := handoffSource
+	sourceLabel := handoffSource
 	if data, err := os.ReadFile(handoffSource); err == nil {
 		handoff = string(data)
+	} else {
+		sourceLabel = "(inline text)"
 	}
 
 	gitState := runGit("diff", "--stat", "HEAD~1", "HEAD")
@@ -105,7 +109,7 @@ CRITICAL: You are AUTONOMOUS. Do NOT ask the human anything. Do NOT wait for con
 %s
 `+"`"+"`"+"`"+`
 
-## Handoff from Previous Session
+## Handoff from Previous Session (source: %s)
 %s
 
 Read the handoff above carefully before doing anything.
@@ -116,7 +120,7 @@ Read the handoff above carefully before doing anything.
 - Q4 flags risks you should verify early
 
 Now execute. Do not ask questions. Do not wait for approval. Start working.`,
-		sessionNum, sessionNum-1, task, gitState, gitStatus, handoff)
+		sessionNum, sessionNum-1, task, gitState, gitStatus, sourceLabel, handoff)
 }
 
 func runGit(args ...string) string {

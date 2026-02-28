@@ -6,6 +6,34 @@ import (
 	"time"
 )
 
+func TestShellNames(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"zsh", true},
+		{"bash", true},
+		{"fish", true},
+		{"sh", true},
+		{"dash", true},
+		{"ksh", true},
+		{"claude", false},
+		{"node", false},
+		{"python3", false},
+		{"vim", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shellNames[tt.name]
+			if got != tt.want {
+				t.Errorf("shellNames[%q] = %v, want %v", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestShellPromptRe(t *testing.T) {
 	tests := []struct {
 		name  string

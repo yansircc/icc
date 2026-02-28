@@ -13,10 +13,14 @@ func runPipe(cfg Config) {
 	sessionCount := 0
 	context := ""
 
-	for i := 1; i <= cfg.MaxSessions; i++ {
+	for i := 1; cfg.MaxSessions == 0 || i <= cfg.MaxSessions; i++ {
 		sessionCount = i
 		printSessionHeader(i, cfg.MaxSessions)
-		fmt.Printf("  model: %s\n", cfg.Model)
+		if cfg.Model != "" {
+			fmt.Printf("  model: %s\n", cfg.Model)
+		} else {
+			fmt.Printf("  model: (default)\n")
+		}
 
 		var prompt string
 		if i == 1 {
@@ -61,12 +65,12 @@ type sessionStats struct {
 }
 
 func runPipeSession(model, prompt string) (string, sessionStats) {
-	cmd := exec.Command(claudeBin, "-p",
-		"--model", model,
-		"--verbose",
-		"--output-format", "stream-json",
-		prompt,
-	)
+	args := []string{"-p"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	args = append(args, "--verbose", "--output-format", "stream-json", prompt)
+	cmd := exec.Command(claudeBin, args...)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

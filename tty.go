@@ -62,9 +62,21 @@ func runTTY(cfg Config) {
 
 	fmt.Printf("\n%s%s══════════════════════════════════════════%s\n", colorBold, colorBlue, colorReset)
 	fmt.Printf("%s%s  ICC (tmux file-signal mode)%s\n", colorBold, colorBlue, colorReset)
-	fmt.Printf("  Model: %s\n", cfg.Model)
-	fmt.Printf("  Max sessions: %d\n", cfg.MaxSessions)
-	fmt.Printf("  Session timeout: %ds\n", cfg.SessionTimeout)
+	if cfg.Model != "" {
+		fmt.Printf("  Model: %s\n", cfg.Model)
+	} else {
+		fmt.Printf("  Model: (default)\n")
+	}
+	if cfg.MaxSessions > 0 {
+		fmt.Printf("  Max sessions: %d\n", cfg.MaxSessions)
+	} else {
+		fmt.Printf("  Max sessions: unlimited\n")
+	}
+	if cfg.SessionTimeout > 0 {
+		fmt.Printf("  Session timeout: %ds\n", cfg.SessionTimeout)
+	} else {
+		fmt.Printf("  Session timeout: unlimited\n")
+	}
 	fmt.Printf("  Attach: %stmux attach -t %s%s\n", colorBold, tmuxSession, colorReset)
 	fmt.Printf("%s%s══════════════════════════════════════════%s\n", colorBold, colorBlue, colorReset)
 
@@ -74,7 +86,8 @@ func runTTY(cfg Config) {
 	prevHandoffPath := ""
 	lastSession := 0
 
-	for i := 1; i <= cfg.MaxSessions; i++ {
+sessionLoop:
+	for i := 1; cfg.MaxSessions == 0 || i <= cfg.MaxSessions; i++ {
 		lastSession = i
 		printSessionHeader(i, cfg.MaxSessions)
 
@@ -86,7 +99,7 @@ func runTTY(cfg Config) {
 		spFile, err := os.CreateTemp("/tmp", "icc-sp-")
 		if err != nil {
 			errMsg("Failed to create temp file: %v", err)
-			break
+			break sessionLoop
 		}
 		spFile.WriteString(sysprompt)
 		spPath := spFile.Name()
@@ -94,21 +107,26 @@ func runTTY(cfg Config) {
 
 		logMsg("Starting claude session...")
 		claudeCmd := fmt.Sprintf(
-			"unset CLAUDECODE && ICC_HANDOFF_PATH='%s' CTX_WARN_TOKENS=%d CTX_CRITICAL_TOKENS=%d %s --model %s --permission-mode %s --append-system-prompt \"$(cat %s)\"",
-			handoffPath, cfg.WarnTokens, cfg.CriticalTokens,
-			claudeBin, cfg.Model, cfg.PermissionMode, spPath,
+			"unset CLAUDECODE && ICC_HANDOFF_PATH='%s' CTX_WARN_TOKENS=%d CTX_CRITICAL_TOKENS=%d %s",
+			handoffPath, cfg.WarnTokens, cfg.CriticalTokens, claudeBin,
+		)
+		if cfg.Model != "" {
+			claudeCmd += fmt.Sprintf(" --model %s", cfg.Model)
+		}
+		claudeCmd += fmt.Sprintf(" --permission-mode %s --append-system-prompt \"$(cat %s)\"",
+			cfg.PermissionMode, spPath,
 		)
 		tmuxSendKeys(pane, claudeCmd, "Enter")
 
 		if !waitForClaudeReady(pane, 60*time.Second) {
 			errMsg("Claude did not start in time")
 			os.Remove(spPath)
-			break
+			break sessionLoop
 		}
 		okMsg("Claude ready")
 
 		var prompt string
-		if i == 1 {
+		if i == 1 || prevHandoffPath == "" {
 			prompt = cfg.Task
 		} else {
 			prompt = buildContinuationPrompt(i, cfg.Task, prevHandoffPath)
@@ -139,32 +157,41 @@ func runTTY(cfg Config) {
 
 			prevHandoffPath = handoffPath
 
-			if i >= cfg.MaxSessions {
+			if cfg.MaxSessions > 0 && i >= cfg.MaxSessions {
 				logMsg("Reached max sessions (%d)", cfg.MaxSessions)
-				break
+				break sessionLoop
 			}
 			time.Sleep(3 * time.Second)
 
-		case 1: // shell prompt (claude exited)
+		case 1: // claude exited
 			if fileExists(handoffPath) {
 				okMsg("Session %d: claude exited with handoff", i)
 				prevHandoffPath = handoffPath
-				if i >= cfg.MaxSessions {
+				if cfg.MaxSessions > 0 && i >= cfg.MaxSessions {
 					logMsg("Reached max sessions (%d)", cfg.MaxSessions)
-					break
+					break sessionLoop
 				}
 				time.Sleep(3 * time.Second)
 			} else {
 				fmt.Printf("\n%s%s✓ Session %d: claude exited without handoff — task likely complete%s\n",
 					colorGreen, colorBold, i, colorReset)
-				break
+				break sessionLoop
 			}
 
 		case 2: // timeout
 			errMsg("Session %d timed out (%ds)", i, cfg.SessionTimeout)
 			logMsg("Force-exiting claude...")
 			gracefulExit(pane, 15*time.Second)
-			break
+			if fileExists(handoffPath) {
+				okMsg("Session %d: handoff file found after timeout at %s", i, handoffPath)
+				prevHandoffPath = handoffPath
+				if cfg.MaxSessions > 0 && i >= cfg.MaxSessions {
+					break sessionLoop
+				}
+				time.Sleep(3 * time.Second)
+			} else {
+				break sessionLoop
+			}
 		}
 	}
 

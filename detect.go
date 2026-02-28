@@ -53,6 +53,25 @@ func isShellPrompt(pane string) bool {
 	return shellPromptRe.MatchString(capturePaneBottom(pane, 3))
 }
 
+// shellNames is the set of common shell binary names.
+var shellNames = map[string]bool{
+	"zsh": true, "bash": true, "fish": true,
+	"sh": true, "dash": true, "ksh": true,
+}
+
+// isShellForeground checks if the tmux pane's foreground process is a shell.
+func isShellForeground(pane string) bool {
+	cmd := exec.Command("tmux", "display-message", "-t", pane, "-p", "#{pane_current_command}")
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	name := strings.TrimSpace(string(out))
+	// Strip leading "-" (login shell indicator, e.g. "-zsh")
+	name = strings.TrimPrefix(name, "-")
+	return shellNames[name]
+}
+
 // waitForClaudeReady clears the pane history then waits for the claude ❯ prompt.
 // Clearing first prevents false positives from a previous session's ❯.
 func waitForClaudeReady(pane string, timeout time.Duration) bool {
@@ -76,7 +95,7 @@ func gracefulExit(pane string, timeout time.Duration) {
 	tmuxSendKeys(pane, "Enter")
 
 	ok := pollUntil(func() bool {
-		return isShellPrompt(pane)
+		return isShellForeground(pane)
 	}, timeout, 1*time.Second)
 
 	if !ok {
@@ -109,15 +128,15 @@ func waitForSignal(handoffPath, pane string, timeout time.Duration) int {
 			}
 		}
 
-		// Check for shell prompt (claude has exited)
-		if isShellPrompt(pane) {
+		// Check for shell foreground (claude has exited)
+		if isShellForeground(pane) {
 			time.Sleep(2 * time.Second)
-			if isShellPrompt(pane) {
+			if isShellForeground(pane) {
 				return 1
 			}
 		}
 
-		if time.Now().After(deadline) {
+		if timeout > 0 && time.Now().After(deadline) {
 			return 2
 		}
 		time.Sleep(2 * time.Second)

@@ -77,12 +77,12 @@ func printUsage() {
 
 Options:
   -p                       Pipe mode (claude -p, no tmux). Default is TTY mode.
-  --model MODEL            Claude model (default: sonnet)
-  --max-sessions N         Max relay sessions (default: 10)
+  --model MODEL            Claude model (default: claude's own default)
+  --max-sessions N         Max relay sessions (default: 0 = unlimited)
   --warn-tokens N          Context warning threshold (default: 175000)
   --critical-tokens N      Context deny threshold (default: 190000)
   --permission-mode MODE   Permission mode (default: bypassPermissions) [TTY only]
-  --session-timeout N      Per-session timeout in seconds (default: 600) [TTY only]
+  --session-timeout N      Per-session timeout in seconds (default: 0 = unlimited) [TTY only]
   --name NAME              tmux session name (default: icc-<random>) [TTY only]
 
 Environment variables CTX_WARN_TOKENS, CTX_CRITICAL_TOKENS also work.
@@ -109,12 +109,12 @@ Examples:
 
 func main() {
 	cfg := Config{
-		Model:          envOrDefault("MODEL", "sonnet"),
-		MaxSessions:    envIntOrDefault("MAX_SESSIONS", 10),
+		Model:          os.Getenv("MODEL"),
+		MaxSessions:    envIntOrDefault("MAX_SESSIONS", 0),
 		WarnTokens:     envIntOrDefault("CTX_WARN_TOKENS", 175000),
 		CriticalTokens: envIntOrDefault("CTX_CRITICAL_TOKENS", 190000),
 		PermissionMode: envOrDefault("PERMISSION_MODE", "bypassPermissions"),
-		SessionTimeout: envIntOrDefault("SESSION_TIMEOUT", 600),
+		SessionTimeout: envIntOrDefault("SESSION_TIMEOUT", 0),
 	}
 
 	args := os.Args[1:]
