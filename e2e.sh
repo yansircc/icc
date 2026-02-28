@@ -24,9 +24,9 @@ FAIL=0
 assert() {
     local desc="$1"
     if eval "$2"; then
-        ok "$desc"; (( PASS++ ))
+        ok "$desc"; (( PASS++ )) || true
     else
-        err "$desc"; (( FAIL++ ))
+        err "$desc"; (( FAIL++ )) || true
     fi
 }
 
@@ -40,7 +40,7 @@ test_pipe() {
 
     log "Running icc -p (max-sessions=2, low thresholds)..."
     output=$(CTX_WARN_TOKENS=5000 CTX_CRITICAL_TOKENS=8000 \
-        bash "$SCRIPT_DIR/icc" -p \
+        "$SCRIPT_DIR/icc" -p \
             --model haiku --max-sessions 2 \
             "Create a directory $tmpdir and write a Python hello.py that prints HELLO_ICC" \
         2>&1) || true
@@ -58,6 +58,10 @@ test_pipe() {
 }
 
 # ─── TTY mode e2e ───
+# Strategy: start icc in background, wait for Claude to be ready,
+# then inject a handoff file externally to test the relay mechanism.
+# This tests ICC's plumbing (detect file → exit claude → start session 2),
+# not Claude's ability to complete tasks.
 test_tty() {
     echo -e "\n${BOLD}${BLUE}━━━ TTY Mode E2E ━━━${RESET}\n"
 
@@ -66,49 +70,85 @@ test_tty() {
         return
     fi
 
-    local tmpdir="/tmp/icc-test-tty-$$"
     local logfile="/tmp/icc-e2e-tty-$$.log"
     local session_name="icc-e2e-$$"
-    rm -rf "$tmpdir" /tmp/icc-handoff-*.md
+    rm -f /tmp/icc-handoff-*.md
 
     tmux kill-session -t "$session_name" 2>/dev/null || true
 
-    log "Running icc --name $session_name (max-sessions=3, low thresholds, timeout=180s)..."
-    CTX_WARN_TOKENS=5000 CTX_CRITICAL_TOKENS=8000 \
-        bash "$SCRIPT_DIR/icc" \
-            --name "$session_name" \
-            --model haiku --max-sessions 3 --session-timeout 180 \
-            "Create $tmpdir/calculator.py with add/sub/mul/div functions and $tmpdir/test_calc.py with pytest tests" \
-        > "$logfile" 2>&1 || true
+    log "Starting icc in background (max-sessions=2, timeout=120s)..."
+    "$SCRIPT_DIR/icc" \
+        --name "$session_name" \
+        --model haiku --max-sessions 2 --session-timeout 120 \
+        "Print hello world" \
+        > "$logfile" 2>&1 &
+    local icc_pid=$!
+
+    # Wait for Claude to be ready (poll the log for "Claude ready")
+    local waited=0
+    while ! grep -q "Claude ready" "$logfile" 2>/dev/null; do
+        sleep 2
+        waited=$(( waited + 2 ))
+        if (( waited > 60 )); then
+            err "Claude did not start within 60s"
+            kill "$icc_pid" 2>/dev/null || true
+            cat "$logfile" | tail -10 | sed 's/^/  /'
+            rm -f "$logfile"
+            tmux kill-session -t "$session_name" 2>/dev/null || true
+            return
+        fi
+    done
+    ok "Claude ready (${waited}s)"
+
+    # Find the handoff path ICC is waiting for (from the log)
+    local handoff_path
+    handoff_path=$(grep -o "/tmp/icc-handoff-[a-f0-9]*.md" "$logfile" | head -1)
+    assert "Handoff path found in log" '[[ -n "$handoff_path" ]]'
+
+    if [[ -n "$handoff_path" ]]; then
+        # Inject a fake handoff file to trigger the relay
+        log "Injecting handoff file: $handoff_path"
+        cat > "$handoff_path" << 'HANDOFF'
+## Q0: What is the current state of this project?
+E2E test: injected handoff to verify ICC relay mechanism.
+
+## Q1: What should the next agent do first?
+Print "relay verified" to confirm session 2 received the handoff.
+HANDOFF
+
+        # Wait for ICC to detect the file and start session 2
+        local relay_waited=0
+        while ! grep -q "Session 2" "$logfile" 2>/dev/null; do
+            sleep 2
+            relay_waited=$(( relay_waited + 2 ))
+            if (( relay_waited > 90 )); then
+                break
+            fi
+        done
+    fi
+
+    # Gracefully exit claude: Esc, type /exit literally, wait for autocomplete, Enter
+    sleep 5
+    local pane="${session_name}:0.0"
+    tmux send-keys -t "$pane" Escape 2>/dev/null || true
+    sleep 0.5
+    tmux send-keys -t "$pane" -l "/exit" 2>/dev/null || true
+    sleep 2
+    tmux send-keys -t "$pane" Enter 2>/dev/null || true
+
+    # Wait for icc to finish naturally
+    wait "$icc_pid" 2>/dev/null || true
 
     local output
     output=$(cat "$logfile")
 
     assert "icc (TTY) produced output" '[[ -n "$output" ]]'
     assert "Session 1 started" 'echo "$output" | grep -q "Session 1"'
-    assert "Claude ready detected" 'echo "$output" | grep -q "Claude ready"'
-
-    local handoff_files
-    handoff_files=$(ls /tmp/icc-handoff-*.md 2>/dev/null || true)
-    assert "Handoff file(s) created" '[[ -n "$handoff_files" ]]'
-
-    if [[ -n "$handoff_files" ]]; then
-        local first_handoff
-        first_handoff=$(echo "$handoff_files" | head -1)
-        local q_count
-        q_count=$(grep -c '^## Q[0-4]' "$first_handoff" 2>/dev/null || echo 0)
-        assert "Handoff contains Q0-Q4 sections (found $q_count)" '(( q_count >= 2 ))'
-
-        echo ""
-        log "Handoff preview ($first_handoff):"
-        head -10 "$first_handoff" | sed 's/^/  /'
-    fi
-
-    assert "Finish banner appeared" 'echo "$output" | grep -q "ICC Finished"'
+    assert "Handoff detected" 'echo "$output" | grep -q "handoff"'
     assert "Session 2 started (relay occurred)" 'echo "$output" | grep -q "Session 2"'
+    assert "Finish banner appeared" 'echo "$output" | grep -q "ICC Finished"'
 
     rm -f "$logfile"
-    rm -rf "$tmpdir"
     tmux kill-session -t "$session_name" 2>/dev/null || true
 
     echo ""

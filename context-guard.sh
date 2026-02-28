@@ -15,24 +15,13 @@ TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path')
 
 [[ ! -f "$TRANSCRIPT" ]] && exit 0
 
-# Extract latest context usage from transcript
-CTX=$(python3 - "$TRANSCRIPT" << 'PY'
-import json, sys
-last = 0
-for line in open(sys.argv[1]):
-    d = json.loads(line)
-    if d.get("type") != "assistant":
-        continue
-    u = d.get("message", {}).get("usage", {})
-    if not u or u.get("output_tokens", 0) <= 20:
-        continue
-    last = (u.get("input_tokens", 0)
-            + u.get("cache_creation_input_tokens", 0)
-            + u.get("cache_read_input_tokens", 0)
-            + u.get("output_tokens", 0))
-print(last)
-PY
-)
+# Extract latest context usage from transcript (jq processes JSONL natively)
+CTX=$(jq -r 'select(.type == "assistant") | .message.usage // {} |
+    select(.output_tokens > 20) |
+    ((.input_tokens // 0) + (.cache_creation_input_tokens // 0) +
+     (.cache_read_input_tokens // 0) + (.output_tokens // 0))' \
+    "$TRANSCRIPT" 2>/dev/null | tail -1)
+CTX=${CTX:-0}
 
 # PreToolUse @ CRITICAL: deny exploratory tools
 if [[ "$HOOK_EVENT" == "PreToolUse" ]] && (( CTX >= CRITICAL )); then
